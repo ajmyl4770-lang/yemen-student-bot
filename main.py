@@ -2,7 +2,9 @@ import os
 import time
 import logging
 import sqlite3
+import threading
 
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -19,19 +21,31 @@ from groq import Groq
 # =========================
 logging.basicConfig(level=logging.INFO)
 
-# 🔑 مفاتيح من Environment Variables (مهم)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ADMIN_ID = "8629019996"
 
-# تأكد المفاتيح
-if not BOT_TOKEN or not GROQ_API_KEY:
-    raise Exception("Missing BOT_TOKEN or GROQ_API_KEY")
+if not BOT_TOKEN:
+    raise Exception("BOT_TOKEN is missing")
+
+if not GROQ_API_KEY:
+    raise Exception("GROQ_API_KEY is missing")
 
 client = Groq(api_key=GROQ_API_KEY)
 
 FREE_LIMIT = 20
 MAX_HISTORY = 8
+
+# =========================
+# 📚 قراءة الكتب
+# =========================
+BOOK_CONTENT = ""
+
+try:
+    with open("books.txt", "r", encoding="utf-8") as f:
+        BOOK_CONTENT = f.read()
+
+except:
+    BOOK_CONTENT = "لا يوجد كتاب مرفوع حالياً"
 
 # =========================
 # 🗄 قاعدة البيانات
@@ -59,34 +73,55 @@ CREATE TABLE IF NOT EXISTS messages (
 conn.commit()
 
 # =========================
-# 👤 المستخدم
+# 👤 وظائف المستخدم
 # =========================
 def create_user(user_id):
-    cur.execute("SELECT id FROM users WHERE id=?", (user_id,))
+
+    cur.execute(
+        "SELECT id FROM users WHERE id=?",
+        (user_id,)
+    )
+
     if not cur.fetchone():
+
         cur.execute(
             "INSERT INTO users VALUES (?, 0, 0, ?)",
             (user_id, int(time.time()))
         )
+
         conn.commit()
 
 def get_user(user_id):
-    cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
+
+    cur.execute(
+        "SELECT * FROM users WHERE id=?",
+        (user_id,)
+    )
+
     return cur.fetchone()
 
 def reset_if_needed(user_id):
+
     user = get_user(user_id)
-    if user and time.time() - user[3] > 86400:
-        cur.execute(
-            "UPDATE users SET daily_count=0, last_reset=? WHERE id=?",
-            (int(time.time()), user_id)
-        )
-        conn.commit()
+
+    if user:
+
+        last_reset = user[3]
+
+        if time.time() - last_reset > 86400:
+
+            cur.execute(
+                "UPDATE users SET daily_count=0, last_reset=? WHERE id=?",
+                (int(time.time()), user_id)
+            )
+
+            conn.commit()
 
 # =========================
 # 💬 الذاكرة
 # =========================
 def get_history(user_id):
+
     cur.execute(
         """
         SELECT role, content
@@ -98,15 +133,36 @@ def get_history(user_id):
         (user_id, MAX_HISTORY)
     )
 
-    return [
-        {"role": r[0], "content": r[1]}
-        for r in reversed(cur.fetchall())
+    rows = cur.fetchall()
+
+    history = [
+        {"role": row[0], "content": row[1]}
+        for row in reversed(rows)
     ]
 
-SYSTEM_PROMPT = "أنت مساعد ذكي اسمه أبو جميل من مركز بن علي التكنولوجي. خبير في صيانة الهواتف."
+    return history
 
 # =========================
-# 🤖 الرسائل
+# 🤖 رسالة النظام
+# =========================
+SYSTEM_PROMPT = f"""
+أنت مساعد ذكي اسمه أبو جميل من مركز بن علي التكنولوجي.
+
+مهمتك:
+- الإجابة اعتماداً على الكتب المرفوعة.
+- إذا وجدت الإجابة داخل الكتاب فأجب منها مباشرة.
+- إذا لم تجد الإجابة قل:
+لم أجد الإجابة داخل الكتب.
+
+- أجب بالعربية بشكل مرتب وواضح.
+
+محتوى الكتب:
+
+{BOOK_CONTENT}
+"""
+
+# =========================
+# 🤖 معالجة الرسائل
 # =========================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -118,14 +174,18 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = get_user(user_id)
 
-    # حد مجاني
+    # الحد المجاني
     if user[1] == 0 and user[2] >= FREE_LIMIT:
+
         await update.message.reply_text(
-            "🚫 انتهى الحد المجاني اليوم.\n💎 اشترك VIP للاستمرار."
+            "🚫 انتهى الحد المجاني اليوم.\n"
+            "💎 اشترك VIP للاستمرار بدون حدود."
         )
+
         return
 
     try:
+
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
             action="typing"
@@ -134,23 +194,38 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history = get_history(user_id)
 
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT}
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            }
         ] + history + [
-            {"role": "user", "content": text}
+            {
+                "role": "user",
+                "content": text
+            }
         ]
 
+        # طلب الذكاء
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
-            temperature=0.7,
+            temperature=0.5,
         )
 
         reply = response.choices[0].message.content.strip()
 
-        # حفظ
-        cur.execute("INSERT INTO messages VALUES (?, ?, ?)", (user_id, "user", text))
-        cur.execute("INSERT INTO messages VALUES (?, ?, ?)", (user_id, "assistant", reply))
+        # حفظ الرسائل
+        cur.execute(
+            "INSERT INTO messages VALUES (?, ?, ?)",
+            (user_id, "user", text)
+        )
 
+        cur.execute(
+            "INSERT INTO messages VALUES (?, ?, ?)",
+            (user_id, "assistant", reply)
+        )
+
+        # زيادة العداد
         cur.execute(
             "UPDATE users SET daily_count = daily_count + 1 WHERE id=?",
             (user_id,)
@@ -158,39 +233,74 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         conn.commit()
 
-        await update.message.reply_text(f"🤖 {reply}")
+        # الرد
+        await update.message.reply_text(
+            f"📚 {reply}"
+        )
 
     except Exception as e:
+
         logging.error(e)
-        await update.message.reply_text("⚠️ خطأ في الاتصال")
+
+        await update.message.reply_text(
+            "⚠️ حدث خطأ أثناء الاتصال."
+        )
 
 # =========================
-# /start
+# ▶️ start
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 مرحباً بك في بوت أبو جميل")
+
+    await update.message.reply_text(
+        "👋 مرحباً بك في بوت أبو جميل\n\n📚 أرسل أي سؤال وسأجيبك من الكتب المرفوعة."
+    )
 
 # =========================
-# 🚀 تشغيل على Render
+# 🌐 Flask
 # =========================
-async def run():
+web_app = Flask(__name__)
+
+@web_app.route("/")
+def home():
+    return "Bot is running!"
+
+def run_web():
+
+    port = int(os.environ.get("PORT", 10000))
+
+    web_app.run(
+        host="0.0.0.0",
+        port=port
+    )
+
+# =========================
+# 🚀 تشغيل البوت
+# =========================
+def main():
 
     print("🚀 BOT STARTED")
 
+    # تشغيل Flask
+    threading.Thread(target=run_web).start()
+
+    # تشغيل البوت
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    app.add_handler(
+        CommandHandler("start", start)
+    )
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle
+        )
+    )
 
-    await asyncio.Event().wait()
+    app.run_polling()
 
 # =========================
-# ▶️ تشغيل
+# ▶️ البداية
 # =========================
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run())
+    main()
