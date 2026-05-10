@@ -15,20 +15,19 @@ from telegram.ext import (
 from groq import Groq
 
 # =========================
-# 🔧 إعدادات البوت
+# 🔧 الإعدادات
 # =========================
 logging.basicConfig(level=logging.INFO)
 
-# توكن البوت
-BOT_TOKEN = "ضع_توكن_البوت_هنا"
-
-# مفتاح Groq
-GROQ_API_KEY = "ضع_مفتاح_GROQ_هنا"
-
-# ايدي الأدمن
+# 🔑 مفاتيح من Environment Variables (مهم)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = "8629019996"
 
-# تشغيل عميل Groq
+# تأكد المفاتيح
+if not BOT_TOKEN or not GROQ_API_KEY:
+    raise Exception("Missing BOT_TOKEN or GROQ_API_KEY")
+
 client = Groq(api_key=GROQ_API_KEY)
 
 FREE_LIMIT = 20
@@ -60,11 +59,10 @@ CREATE TABLE IF NOT EXISTS messages (
 conn.commit()
 
 # =========================
-# 👤 وظائف المستخدم
+# 👤 المستخدم
 # =========================
 def create_user(user_id):
     cur.execute("SELECT id FROM users WHERE id=?", (user_id,))
-    
     if not cur.fetchone():
         cur.execute(
             "INSERT INTO users VALUES (?, 0, 0, ?)",
@@ -72,24 +70,18 @@ def create_user(user_id):
         )
         conn.commit()
 
-
 def get_user(user_id):
     cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
     return cur.fetchone()
 
-
 def reset_if_needed(user_id):
     user = get_user(user_id)
-
-    if user:
-        last_reset = user[3]
-
-        if time.time() - last_reset > 86400:
-            cur.execute(
-                "UPDATE users SET daily_count=0, last_reset=? WHERE id=?",
-                (int(time.time()), user_id)
-            )
-            conn.commit()
+    if user and time.time() - user[3] > 86400:
+        cur.execute(
+            "UPDATE users SET daily_count=0, last_reset=? WHERE id=?",
+            (int(time.time()), user_id)
+        )
+        conn.commit()
 
 # =========================
 # 💬 الذاكرة
@@ -106,26 +98,15 @@ def get_history(user_id):
         (user_id, MAX_HISTORY)
     )
 
-    rows = cur.fetchall()
-
-    history = [
-        {"role": row[0], "content": row[1]}
-        for row in reversed(rows)
+    return [
+        {"role": r[0], "content": r[1]}
+        for r in reversed(cur.fetchall())
     ]
 
-    return history
+SYSTEM_PROMPT = "أنت مساعد ذكي اسمه أبو جميل من مركز بن علي التكنولوجي. خبير في صيانة الهواتف."
 
 # =========================
-# 🤖 رسالة النظام
-# =========================
-SYSTEM_PROMPT = """
-أنت مساعد ذكي اسمه أبو جميل من مركز بن علي التكنولوجي.
-خبير في صيانة الهواتف والبطاريات والذكاء الصناعي.
-ترد بالعربية بشكل احترافي ومختصر.
-"""
-
-# =========================
-# 🤖 معالجة الرسائل
+# 🤖 الرسائل
 # =========================
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -137,22 +118,19 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = get_user(user_id)
 
-    # التحقق من الحد المجاني
+    # حد مجاني
     if user[1] == 0 and user[2] >= FREE_LIMIT:
         await update.message.reply_text(
-            "🚫 انتهى الحد المجاني اليوم.\n"
-            "💎 اشترك VIP للاستمرار بدون حدود."
+            "🚫 انتهى الحد المجاني اليوم.\n💎 اشترك VIP للاستمرار."
         )
         return
 
     try:
-        # حالة الكتابة
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
             action="typing"
         )
 
-        # سجل المحادثة
         history = get_history(user_id)
 
         messages = [
@@ -161,7 +139,6 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {"role": "user", "content": text}
         ]
 
-        # طلب الذكاء
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
@@ -170,18 +147,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reply = response.choices[0].message.content.strip()
 
-        # حفظ الرسائل
-        cur.execute(
-            "INSERT INTO messages VALUES (?, ?, ?)",
-            (user_id, "user", text)
-        )
+        # حفظ
+        cur.execute("INSERT INTO messages VALUES (?, ?, ?)", (user_id, "user", text))
+        cur.execute("INSERT INTO messages VALUES (?, ?, ?)", (user_id, "assistant", reply))
 
-        cur.execute(
-            "INSERT INTO messages VALUES (?, ?, ?)",
-            (user_id, "assistant", reply)
-        )
-
-        # زيادة العداد
         cur.execute(
             "UPDATE users SET daily_count = daily_count + 1 WHERE id=?",
             (user_id,)
@@ -189,49 +158,39 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         conn.commit()
 
-        # الرد
         await update.message.reply_text(f"🤖 {reply}")
 
     except Exception as e:
         logging.error(e)
-
-        await update.message.reply_text(
-            "⚠️ حدث خطأ أثناء الاتصال."
-        )
+        await update.message.reply_text("⚠️ خطأ في الاتصال")
 
 # =========================
-# ▶️ /start
+# /start
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "👋 مرحباً بك في بوت أبو جميل بمركز بن علي التكنولوجي!"
-    )
+    await update.message.reply_text("👋 مرحباً بك في بوت أبو جميل")
 
 # =========================
-# 🚀 تشغيل البوت
+# 🚀 تشغيل على Render
 # =========================
-def main():
+async def run():
 
-    print("🚀 BOT IS STARTING...")
+    print("🚀 BOT STARTED")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(
-        CommandHandler("start", start)
-    )
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle
-        )
-    )
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
 
-    app.run_polling()
+    await asyncio.Event().wait()
 
 # =========================
-# 🏁 البداية
+# ▶️ تشغيل
 # =========================
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(run())
