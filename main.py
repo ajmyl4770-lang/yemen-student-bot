@@ -1,8 +1,18 @@
-from flask import Flask, request
+from flask import Flask
 import os
 import requests
+import threading
 from PyPDF2 import PdfReader
 from openai import OpenAI
+
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
 # 🔑 المفاتيح
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -10,11 +20,14 @@ OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_KEY)
 
-URL = f"https://api.telegram.org/bot{TOKEN}"
+# 🌐 Flask
+app_flask = Flask(__name__)
 
-app = Flask(__name__)
+@app_flask.route("/")
+def home():
+    return "BOT IS RUNNING 🚀"
 
-# 📚 كتبك
+# 📚 الكتب
 PDF_FILES = [
     "كتاب_الرياضيات_الجزء_الأول_الطبعة_2017_الصف_التاسع_اليمن.pdf",
     "كتاب_الرياضيات_الجزء_الثاني_الطبعة_2017_الصف_التاسع_اليمن.pdf",
@@ -27,65 +40,78 @@ PDF_FILES = [
 # 📖 تحميل الكتب
 def load_books():
     text = ""
+
     for file in PDF_FILES:
         try:
             reader = PdfReader(file)
+
             for page in reader.pages:
                 text += (page.extract_text() or "") + "\n"
-        except:
-            pass
+
+        except Exception as e:
+            print(f"خطأ في الملف {file}: {e}")
+
     return text[:12000]
 
 BOOK_TEXT = load_books()
 
-# 🤖 ذكاء اصطناعي
+# 🤖 الذكاء الاصطناعي
 def ask_ai(question):
     try:
-        res = client.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": "أنت مدرس ذكي لطلاب اليمن. استخدم الكتب إن أمكن."
-                    + "\n\nالكتب:\n" + BOOK_TEXT
+                    "content":
+                    "أنت مدرس ذكي لطلاب اليمن. استخدم الكتب إن أمكن.\n\n"
+                    + BOOK_TEXT
                 },
-                {"role": "user", "content": question}
+                {
+                    "role": "user",
+                    "content": question
+                }
             ]
         )
-        return res.choices[0].message.content
-    except:
-        return "❌ خطأ في الذكاء الاصطناعي"
 
-# 📤 إرسال رسالة
-def send(chat_id, text):
-    requests.post(f"{URL}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text
-    })
+        return response.choices[0].message.content
 
-# 🔥 Webhook
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json()
+    except Exception as e:
+        print(e)
+        return "❌ حدث خطأ"
 
-    try:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"]["text"]
+# 🚀 /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔥 البوت شغال")
 
-        answer = ask_ai(text)
-        send(chat_id, answer)
+# 💬 استقبال الرسائل
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
 
-    except:
-        pass
+    await update.message.reply_text("⏳ جاري التفكير...")
 
-    return "ok"
+    answer = ask_ai(user_text)
 
-# 🌐 اختبار السيرفر
-@app.route("/")
-def home():
-    return "BOT IS RUNNING 🚀"
+    await update.message.reply_text(answer)
 
-# 🚀 تشغيل السيرفر
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+# 🤖 تشغيل البوت
+def run_bot():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
+
+    print("🚀 BOT STARTED")
+
+    app.run_polling()
+
+# ▶️ تشغيل البوت في Thread
+threading.Thread(target=run_bot).start()
+
+# 🌐 تشغيل Flask
+PORT = int(os.environ.get("PORT", 10000))
+
+app_flask.run(host="0.0.0.0", port=PORT)
