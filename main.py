@@ -5,47 +5,56 @@ from PyPDF2 import PdfReader
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
-PDF_FILE = "book.pdf"  # ضع ملفك هنا
+# 📚 جميع ملفات PDF في المشروع
+PDF_FILES = [
+    "book.pdf",
+    "كتاب_الرياضيات_الجزء_الأول_الطبعة_2017_الصف_التاسع_اليمن.pdf",
+    "كتاب_الرياضيات_الجزء_الثاني_الطبعة_2017_الصف_التاسع_اليمن.pdf",
+    "كتاب_لغتي_العربية_الجزء_الأول_الطبعة_2026_الصف_التاسع_صنعاء_اليمن.pdf",
+    "كتاب_لغتي_العربية_الجزء_الثاني_الطبعة_2023_للصف_التاسع_اليمن.pdf",
+    "ملخص النحو اهداء صفحة المدرس بوك.pdf",
+    "ملخص عربي صف تاسع( المعمري) (1).pdf"
+]
 
-# 📚 قراءة PDF
-def read_pdf():
+# 📚 قراءة كل الكتب
+def load_all_books():
     text = ""
-    try:
-        reader = PdfReader(PDF_FILE)
-        for page in reader.pages:
-            text += (page.extract_text() or "") + "\n"
-    except Exception as e:
-        return ""
+    for file in PDF_FILES:
+        try:
+            reader = PdfReader(file)
+            for page in reader.pages:
+                text += (page.extract_text() or "") + "\n"
+        except Exception as e:
+            print(f"Error reading {file}: {e}")
     return text.lower()
 
-BOOK_TEXT = read_pdf()
+BOOK_TEXT = load_all_books()
 
-# 🔍 بحث داخل الكتاب
+# 🔍 بحث ذكي
 def search(question):
     question = question.lower()
-    sentences = BOOK_TEXT.split("\n")
+    lines = BOOK_TEXT.split("\n")
 
     results = []
-    for s in sentences:
-        score = sum(1 for w in question.split() if w in s)
+    for line in lines:
+        score = sum(1 for w in question.split() if w in line)
         if score > 0:
-            results.append((score, s))
+            results.append((score, line))
 
     results.sort(reverse=True, key=lambda x: x[0])
 
     if results:
-        return "📚 من الكتاب:\n\n" + "\n".join([r[1] for r in results[:5]])
+        return "📚 من الكتب:\n\n" + "\n".join([r[1] for r in results[:7]])
 
-    return "❌ ما لقيت شرح داخل الكتاب، جرّب تسأل بطريقة أوضح."
+    return "❌ لم أجد شرح واضح في الكتب، جرّب صياغة السؤال."
 
 # 🚀 start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📚 أهلاً بك، اكتب سؤالك من الكتاب")
+    await update.message.reply_text("📚 أنا مدرسك من كل كتب التاسع اليمني\nاكتب سؤالك")
 
 # 💬 رسائل
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    answer = search(update.message.text)
-    await update.message.reply_text(answer)
+    await update.message.reply_text(search(update.message.text))
 
 def main():
     if not TOKEN:
@@ -57,7 +66,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("✅ BOT RUNNING WITH PDF")
+    print("✅ BOT RUNNING (MULTI PDF)")
     app.run_polling()
 
 if __name__ == "__main__":
