@@ -1,60 +1,63 @@
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import os
+from PyPDF2 import PdfReader
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
-# 📚 تحميل الكتب من ملف
-def load_books():
+PDF_FILE = "book.pdf"  # ضع ملفك هنا
+
+# 📚 قراءة PDF
+def read_pdf():
+    text = ""
     try:
-        with open("books.txt", "r", encoding="utf-8") as f:
-            return f.read().lower()
-    except:
+        reader = PdfReader(PDF_FILE)
+        for page in reader.pages:
+            text += (page.extract_text() or "") + "\n"
+    except Exception as e:
         return ""
+    return text.lower()
 
-BOOKS_DATA = load_books()
+BOOK_TEXT = read_pdf()
 
-# 🤖 البحث داخل الكتب
-def search_answer(question):
+# 🔍 بحث داخل الكتاب
+def search(question):
     question = question.lower()
-
-    # تقسيم بسيط حسب الجمل
-    sentences = BOOKS_DATA.split("\n")
+    sentences = BOOK_TEXT.split("\n")
 
     results = []
     for s in sentences:
-        if any(word in s for word in question.split()):
-            results.append(s)
+        score = sum(1 for w in question.split() if w in s)
+        if score > 0:
+            results.append((score, s))
+
+    results.sort(reverse=True, key=lambda x: x[0])
 
     if results:
-        return "📚 من الكتب:\n\n" + "\n".join(results[:5])
+        return "📚 من الكتاب:\n\n" + "\n".join([r[1] for r in results[:5]])
 
-    return "❌ ما لقيت شرح واضح في الكتب، حاول تسأل بطريقة أبسط."
+    return "❌ ما لقيت شرح داخل الكتاب، جرّب تسأل بطريقة أوضح."
 
-# 🚀 /start
+# 🚀 start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📚 أهلاً بك في بوت المدرّس\n"
-        "اكتب سؤالك وأنا أشرح لك من الكتب"
-    )
+    await update.message.reply_text("📚 أهلاً بك، اكتب سؤالك من الكتاب")
 
-# 💬 الردود
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    answer = search_answer(user_text)
+# 💬 رسائل
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = search(update.message.text)
     await update.message.reply_text(answer)
 
 def main():
     if not TOKEN:
-        print("❌ TELEGRAM_TOKEN غير موجود في Render")
+        print("❌ TELEGRAM_TOKEN غير موجود")
         return
 
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("✅ BOT IS RUNNING")
+    print("✅ BOT RUNNING WITH PDF")
     app.run_polling()
 
 if __name__ == "__main__":
