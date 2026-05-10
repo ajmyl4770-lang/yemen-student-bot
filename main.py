@@ -1,13 +1,21 @@
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask, request
 import os
+import requests
 from PyPDF2 import PdfReader
+from openai import OpenAI
 
+# 🔑 المفاتيح
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
 
-# 📚 جميع ملفات PDF في المشروع
+client = OpenAI(api_key=OPENAI_KEY)
+
+URL = f"https://api.telegram.org/bot{TOKEN}"
+
+app = Flask(__name__)
+
+# 📚 كتبك
 PDF_FILES = [
-    "book.pdf",
     "كتاب_الرياضيات_الجزء_الأول_الطبعة_2017_الصف_التاسع_اليمن.pdf",
     "كتاب_الرياضيات_الجزء_الثاني_الطبعة_2017_الصف_التاسع_اليمن.pdf",
     "كتاب_لغتي_العربية_الجزء_الأول_الطبعة_2026_الصف_التاسع_صنعاء_اليمن.pdf",
@@ -16,58 +24,68 @@ PDF_FILES = [
     "ملخص عربي صف تاسع( المعمري) (1).pdf"
 ]
 
-# 📚 قراءة كل الكتب
-def load_all_books():
+# 📖 تحميل الكتب
+def load_books():
     text = ""
     for file in PDF_FILES:
         try:
             reader = PdfReader(file)
             for page in reader.pages:
                 text += (page.extract_text() or "") + "\n"
-        except Exception as e:
-            print(f"Error reading {file}: {e}")
-    return text.lower()
+        except:
+            pass
+    return text[:12000]
 
-BOOK_TEXT = load_all_books()
+BOOK_TEXT = load_books()
 
-# 🔍 بحث ذكي
-def search(question):
-    question = question.lower()
-    lines = BOOK_TEXT.split("\n")
+# 🤖 ذكاء اصطناعي
+def ask_ai(question):
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "أنت مدرس ذكي لطلاب اليمن. استخدم الكتب إن أمكن."
+                    + "\n\nالكتب:\n" + BOOK_TEXT
+                },
+                {"role": "user", "content": question}
+            ]
+        )
+        return res.choices[0].message.content
+    except:
+        return "❌ خطأ في الذكاء الاصطناعي"
 
-    results = []
-    for line in lines:
-        score = sum(1 for w in question.split() if w in line)
-        if score > 0:
-            results.append((score, line))
+# 📤 إرسال رسالة
+def send(chat_id, text):
+    requests.post(f"{URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text
+    })
 
-    results.sort(reverse=True, key=lambda x: x[0])
+# 🔥 Webhook
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    data = request.get_json()
 
-    if results:
-        return "📚 من الكتب:\n\n" + "\n".join([r[1] for r in results[:7]])
+    try:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"]["text"]
 
-    return "❌ لم أجد شرح واضح في الكتب، جرّب صياغة السؤال."
+        answer = ask_ai(text)
+        send(chat_id, answer)
 
-# 🚀 start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📚 أنا مدرسك من كل كتب التاسع اليمني\nاكتب سؤالك")
+    except:
+        pass
 
-# 💬 رسائل
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(search(update.message.text))
+    return "ok"
 
-def main():
-    if not TOKEN:
-        print("❌ TELEGRAM_TOKEN غير موجود")
-        return
+# 🌐 اختبار السيرفر
+@app.route("/")
+def home():
+    return "BOT IS RUNNING 🚀"
 
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-    print("✅ BOT RUNNING (MULTI PDF)")
-    app.run_polling()
-
+# 🚀 تشغيل السيرفر
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
